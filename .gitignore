@@ -1,3 +1,36 @@
+# Python
 venv/
-venv
 env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Environment / secrets
+.env
+.env.*
+*.pgpass
+
+# Generated data — reproducible via etl/generate_data.py, keep large files out of git
+sample_data/*
+!sample_data/.gitkeep
+
+# Database dumps and backups
+*.dump
+*.backup
+*.sql.gz
+
+# Power BI / Tableau temp and backup files
+*.pbix.tmp
+~*.pbix
+*.twbr
+.tmp/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

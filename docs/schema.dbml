@@ -1,0 +1,102 @@
+Table categories {
+  category_id integer [primary key]
+  name varchar [not null, unique]
+  parent_category_id integer [ref: > categories.category_id]
+}
+Table stores {
+  store_id integer [primary key]
+  name varchar [not null]
+  phone varchar [not null]
+  city varchar [not null]
+  opened_date date [not null]
+  manager varchar [not null]
+}
+
+Table customers {
+  customer_id integer [primary key]
+  name varchar [not null]
+  email varchar [not null, unique]
+  phone varchar [unique]
+  sign_up_date date [not null]
+  city varchar [not null]
+  sex varchar [not null]
+  age integer [not null]
+}
+
+Table products {
+  product_id integer [primary key]
+  category_id integer [not null]
+  name varchar [not null]
+  brand varchar [not null]
+  unit_price decimal [not null, note: 'CHECK unit_price >= 0']
+  cost decimal [not null, note: 'CHECK cost >= 0']
+
+}
+Ref: products.category_id > categories.category_id
+
+Table employees{
+  employee_id integer [primary key]
+  store_id integer [not null]
+  name varchar [not null]
+  email varchar [not null,unique]
+  salary decimal [not null, note: 'CHECK salary > 0']
+  manager_id integer [note: 'nullable — top-level manager has no manager']
+}
+Ref: employees.store_id > stores.store_id
+Ref: employees.manager_id > employees.employee_id
+
+Table orders {
+  order_id integer [primary key]
+  customer_id integer [not null]
+  store_id integer [not null]
+  employee_id integer [note: 'nullable']
+  order_date date [not null]
+  channel varchar [not null, default: 'in-store', note: 'CHECK channel IN (online, in-store)']
+  status varchar [not null, default: 'pending', note: 'CHECK status IN (pending, confirmed, shipped, delivered, cancelled)']
+  total_amount decimal [not null, default: 0, note: 'CHECK total_amount >= 0']
+}
+
+Ref: orders.customer_id > customers.customer_id
+Ref: orders.store_id > stores.store_id
+Ref: orders.employee_id > employees.employee_id
+
+Table order_items {
+  order_item_id integer [primary key]
+  order_id integer [not null]
+  product_id integer [not null]
+  quantity integer [not null, note: 'CHECK quantity > 0']
+  unit_price decimal [not null, note: 'price at time of sale; CHECK unit_price >= 0']
+  discount decimal [not null, default: 0, note: 'CHECK discount >= 0']
+
+  indexes {
+    (order_id, product_id) [unique]
+  }
+}
+
+Ref: order_items.order_id > orders.order_id
+Ref: order_items.product_id > products.product_id
+
+Table inventory {
+  inventory_id integer [primary key]
+  store_id integer [not null]
+  product_id integer [not null]
+  quantity integer [not null, default: 0, note: 'CHECK quantity >= 0']
+  last_restock_date date
+
+  indexes {
+    (store_id, product_id) [unique]
+  }
+}
+
+Ref: inventory.store_id > stores.store_id
+Ref: inventory.product_id > products.product_id
+
+Table payments {
+  payment_id integer [primary key]
+  order_id integer [not null]
+  method varchar [not null, note: 'CHECK method IN (cash, card, wallet, bank_transfer)']
+  amount decimal [not null, note: 'CHECK amount > 0']
+  paid_at timestamp [not null]
+}
+
+Ref: payments.order_id > orders.order_id
