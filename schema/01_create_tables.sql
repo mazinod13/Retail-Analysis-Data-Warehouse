@@ -66,7 +66,7 @@ CREATE TABLE orders (
                    CHECK (channel IN ('online', 'in-store')) ,
     status         VARCHAR(50) NOT NULL DEFAULT 'pending'
                    CHECK (status IN ('pending', 'completed', 'cancelled','shipped','delivered')),
-    total_amount   DECIMAL(10,2) NOT NULL DEFAULT 0 CHECK (total_amount >0),
+    total_amount   DECIMAL(10,2) NOT NULL CHECK (total_amount >0),
 
     CONSTRAINT fk_orders_customer
          FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
