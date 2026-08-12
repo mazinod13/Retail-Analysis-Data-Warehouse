@@ -2,7 +2,7 @@
 Orchestrator: calls each table's generator in FK-safe dependency order and
 writes the results to sample_data/*.csv.
 
-Each generator lives in its own file under generators/ — this script just
+Each generator lives in its own file under etl/generators/ — this script just
 wires them together in the right order (a table's generator needs its
 parent tables' data before it can run: employees needs stores, orders need
 customers/stores/employees/products, etc.) and does the actual file I/O.

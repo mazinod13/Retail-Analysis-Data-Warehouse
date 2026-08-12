@@ -5,20 +5,20 @@ Two things this needs to set up for later stages, neither of which is a
 real database column:
 
   1. `signup_date` spread uniformly across the *entire* order window
-     (not clustered) — this is what makes cohort/retention analysis
+     (not clustered) â€” this is what makes cohort/retention analysis
      possible later; without continuous signups every customer would be
      in the same cohort.
 
   2. A hidden "segment" per customer (one_time / occasional / loyal),
-     drawn from config.CUSTOMER_SEGMENTS. It's returned as a separate
+     drawn from etl.config.CUSTOMER_SEGMENTS. It's returned as a separate
      dict rather than a DataFrame column because it's not part of the
-     `customers` table — it only exists to tell generators/orders.py how
+     `customers` table â€” it only exists to tell generators/orders.py how
      many orders that customer should place.
 """
 
 import pandas as pd
 
-from config import CUSTOMER_SEGMENTS, CITIES, NUM_CUSTOMERS, ORDER_START, ORDER_END
+from config import CUSTOMER_SEGMENTS, CITIES, NUM_CUSTOMERS,SIGNUP_START,ORDER_END
 from config import fake, random, random_date
 
 
@@ -38,7 +38,7 @@ def generate_customers():
         segment = random.choices(segments, weights=weights, k=1)[0]
         segment_by_customer[customer_id] = segment
 
-        signup = random_date(ORDER_START, ORDER_END)
+        signup = random_date(SIGNUP_START,ORDER_END)
 
         rows.append({
             "customer_id": customer_id,

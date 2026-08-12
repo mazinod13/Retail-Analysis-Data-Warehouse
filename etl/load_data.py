@@ -11,6 +11,12 @@ this), so every foreign key a row points to already exists by the time
 that row is inserted. Loading `orders` before `customers`, for example,
 would fail immediately on the customer_id foreign key.
 
+After loading, every SERIAL sequence is fast-forwarded past the highest ID
+that was just inserted. COPY writes explicit IDs straight into the column
+and never touches the sequence, so without this step every sequence is
+still sitting at 1 — and the first ordinary INSERT (from a stored
+procedure or trigger in a later phase) would collide with existing rows.
+
 Usage:
     python etl/load_data.py            # loads all tables
     python etl/load_data.py --truncate # wipes existing rows first, then loads
@@ -30,23 +36,25 @@ from dotenv import load_dotenv
 
 SAMPLE_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "sample_data")
 
-# (table_name, csv_filename) in FK-safe dependency order. This must match
-# the order tables were created in schema/01_create_tables.sql.
+# (table_name, csv_filename, pk_column) in FK-safe dependency order. This
+# must match the order tables were created in schema/01_create_tables.sql.
+# pk_column is the SERIAL primary key, needed to reset that table's
+# sequence after loading.
 LOAD_ORDER = [
-    ("categories", "categories.csv"),
-    ("stores", "stores.csv"),
-    ("customers", "customers.csv"),
-    ("products", "products.csv"),
-    ("employees", "employees.csv"),
-    ("orders", "orders.csv"),
-    ("order_items", "order_items.csv"),
-    ("inventory", "inventory.csv"),
-    ("payments", "payments.csv"),
+    ("categories", "categories.csv", "category_id"),
+    ("stores", "stores.csv", "store_id"),
+    ("customers", "customers.csv", "customer_id"),
+    ("products", "products.csv", "product_id"),
+    ("employees", "employees.csv", "employee_id"),
+    ("orders", "orders.csv", "order_id"),
+    ("order_items", "order_items.csv", "order_item_id"),
+    ("inventory", "inventory.csv", "inventory_id"),
+    ("payments", "payments.csv", "payment_id"),
 ]
 
 # Reverse of LOAD_ORDER — used for --truncate, so tables are emptied in an
 # order that never violates a still-present foreign key.
-TRUNCATE_ORDER = [table for table, _ in reversed(LOAD_ORDER)]
+TRUNCATE_ORDER = [table for table, _, _ in reversed(LOAD_ORDER)]
 
 
 def get_connection():
@@ -91,6 +99,34 @@ def load_table(cur, table_name, csv_filename):
     return len(df)
 
 
+def reset_sequence(cur, table_name, pk_column):
+    """Fast-forward a table's SERIAL sequence past the IDs COPY just wrote.
+
+    The three-argument setval(seq, value, is_called=false) means "this value
+    has not been handed out yet", so the next INSERT gets exactly `value`.
+    That makes the empty-table case correct too: MAX() is NULL, COALESCE
+    turns it into 0, and the next ID is 1 rather than 2.
+
+    pg_get_serial_sequence looks the sequence name up from the catalog
+    instead of hard-coding "<table>_<column>_seq", which would silently
+    break if a sequence were ever renamed.
+
+    The table and column are interpolated into the SQL because identifiers
+    can't be bound as parameters — they come from LOAD_ORDER above, not
+    from user input.
+    """
+    cur.execute(
+        f"""
+        SELECT setval(
+            pg_get_serial_sequence(%s, %s),
+            COALESCE((SELECT MAX({pk_column}) FROM {table_name}), 0) + 1,
+            false
+        )
+        """,
+        (table_name, pk_column),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -108,9 +144,13 @@ def main():
                     for table in TRUNCATE_ORDER:
                         cur.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
 
-                for table_name, csv_filename in LOAD_ORDER:
+                for table_name, csv_filename, _ in LOAD_ORDER:
                     row_count = load_table(cur, table_name, csv_filename)
                     print(f"  loaded {table_name}: {row_count:,} rows")
+
+                print("Resetting sequences...")
+                for table_name, _, pk_column in LOAD_ORDER:
+                    reset_sequence(cur, table_name, pk_column)
 
         print("\nDone. Transaction committed.")
     except Exception:

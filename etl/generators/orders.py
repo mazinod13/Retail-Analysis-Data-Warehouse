@@ -37,7 +37,7 @@ def build_seasonal_calendar(start: date, end: date):
     months = []
     cursor = date(start.year, start.month, 1)
     while cursor <= end:
-        weight = 3.0 if cursor.month in (11, 12) else 1.0
+        weight = 2.0 if cursor.month in (11, 12) else 1.0
         months.append((cursor.year, cursor.month, weight))
         cursor = date(cursor.year + 1, 1, 1) if cursor.month == 12 \
             else date(cursor.year, cursor.month + 1, 1)
@@ -69,12 +69,6 @@ def seasonal_random_date(start: date, end: date, calendar):
 # --------------------------------------------------------------------------
 def pick_status(order_date: date):
     """Recent orders haven't had time to resolve; older ones have.
-
-    NOTE: the schema's CHECK constraint (schema/01_create_tables.sql) uses
-    'completed', not 'confirmed' — docs/schema.dbml and database.md say
-    'confirmed', which doesn't match and would be rejected on load. This
-    follows the actual SQL constraint; update the docs to match, or swap
-    this back if 'confirmed' was the intended value and the SQL is wrong.
     """
     days_old = (ORDER_END - order_date).days
     if days_old < 3:
@@ -132,7 +126,7 @@ def generate_orders_and_items(customers_df, segment_by_customer, stores_df,
 
             order_date = seasonal_random_date(store_floor, ORDER_END, calendar)
             channel = random.choices(CHANNELS, weights=CHANNEL_WEIGHTS, k=1)[0]
-            # Online orders have no salesperson — leave employee_id null
+            # Online orders have no salesperson â€” leave employee_id null
             # rather than inventing a fake "web" employee (see README).
             employee_id = None if channel == "online" \
                 else random.choice(employees_by_store[store_id])

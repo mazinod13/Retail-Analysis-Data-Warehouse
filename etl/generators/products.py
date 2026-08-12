@@ -3,12 +3,12 @@ Generates the `products` table.
 
 The important trick here is `popularity_weight`: each product gets a
 Zipf-like weight (1/rank^1.2 after a random shuffle of ranks). This column
-is NOT part of the real schema — generate_data.py drops it before writing
+is NOT part of the real schema â€” generate_data.py drops it before writing
 products.csv. It exists purely so generators/orders.py can use it as a
 sampling weight when picking which products go into an order.
 
 Sampling with these weights, over many orders, is what produces the
-"20% of products drive ~80% of revenue" pattern organically — nobody has
+"20% of products drive ~80% of revenue" pattern organically â€” nobody has
 to hard-code which specific products are "popular".
 """
 
@@ -43,7 +43,7 @@ def generate_products(leaf_category_ids):
     df = pd.DataFrame(rows)
 
     # Shuffle product ids into a random rank order, then assign weight by
-    # rank so popularity isn't correlated with product_id / price / brand —
+    # rank so popularity isn't correlated with product_id / price / brand â€”
     # it's genuinely arbitrary which products end up "popular".
     ranks = df["product_id"].sample(frac=1, random_state=SEED).reset_index(drop=True)
     weight_by_rank = {pid: 1 / (i + 1) ** 1.2 for i, pid in enumerate(ranks)}

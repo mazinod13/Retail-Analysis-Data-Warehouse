@@ -52,7 +52,7 @@ Table orders {
   employee_id integer [note: 'nullable']
   order_date date [not null]
   channel varchar [not null, default: 'in-store', note: 'CHECK channel IN (online, in-store)']
-  status varchar [not null, default: 'pending', note: 'CHECK status IN (pending, confirmed, shipped, delivered, cancelled)']
+  status varchar [not null, default: 'pending', note: 'CHECK status IN (pending, completed, shipped, delivered, cancelled)']
   total_amount decimal [not null, default: 0, note: 'CHECK total_amount >= 0']
 }
 

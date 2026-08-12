@@ -3,12 +3,12 @@ Generates the `employees` table.
 
 Builds a simple two-level manager hierarchy per store:
   - one store manager, hired within 30 days of the store opening,
-    with manager_id = NULL (has to be nullable — see README)
+    with manager_id = NULL (has to be nullable â€” see README)
   - a handful of staff, hired any time after the store opened,
     all reporting to that store's manager
 
 This keeps the self-referencing manager_id FK realistic without needing a
-deep org chart — good enough for recursive-CTE practice later, without
+deep org chart â€” good enough for recursive-CTE practice later, without
 generating a hierarchy so deep it's hard to eyeball-check.
 """
 

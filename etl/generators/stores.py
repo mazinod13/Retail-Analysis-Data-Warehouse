@@ -3,14 +3,14 @@ Generates the `stores` table.
 
 The one thing that matters here for downstream data: `opened_date` has to
 leave enough room before ORDER_END for the store to actually have order
-history. STORE_OPEN_EARLIEST/LATEST in config.py encode that constraint —
+history. STORE_OPEN_EARLIEST/LATEST in config.py encode that constraint â€”
 every store opens at least 60 days before ORDER_END.
 """
 
 import pandas as pd
 
-from etl.config import CITIES, NUM_STORES, STORE_OPEN_EARLIEST, STORE_OPEN_LATEST
-from etl.config import fake, random, random_date
+from config import CITIES, NUM_STORES, STORE_OPEN_EARLIEST, STORE_OPEN_LATEST
+from config import fake, random, random_date
 
 
 def generate_stores():

@@ -2,7 +2,7 @@
 Generates the `payments` table.
 
 Only orders that have actually progressed to a paid status get a payment
-row — a 'pending' order hasn't been charged yet, and a 'cancelled' order
+row â€” a 'pending' order hasn't been charged yet, and a 'cancelled' order
 never went through. Generating a payment for every order regardless of
 status would make it impossible to later write a meaningful "orders with
 no payment" query.
@@ -22,7 +22,7 @@ PAYMENT_METHODS = ["cash", "card", "wallet", "bank_transfer"]
 PAYMENT_METHOD_WEIGHTS = [0.15, 0.55, 0.2, 0.1]
 
 # Orders in these statuses have actually been paid for.
-# NOTE: matches the schema's CHECK constraint, which uses 'completed' —
+# NOTE: matches the schema's CHECK constraint, which uses 'completed' â€”
 # see the note in generators/orders.py::pick_status.
 PAID_STATUSES = {"completed", "shipped", "delivered"}
 
