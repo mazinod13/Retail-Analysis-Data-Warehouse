@@ -21,9 +21,9 @@ def generate_inventory(stores_df, products_df):
     inventory_id = 1
     tier_names = list(STOCK_TIERS)
     tier_weights = [STOCK_TIERS[t]["weight"] for t in tier_names]
-    tier = random.choices(tier_names, weights=tier_weights, k=1)[0]
     for store_id in stores_df["store_id"]:
         for product_id in products_df["product_id"]:
+            tier = random.choices(tier_names, weights=tier_weights, k=1)[0]
             has_restock = random.random() < 0.9
             rows.append({
                 "inventory_id": inventory_id,

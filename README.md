@@ -12,22 +12,22 @@ I'm building this in phases and documenting the decisions as I go, including the
 OLTP (3NF)  →  ETL  →  Star Schema Warehouse  →  Reporting Views  →  Dashboard
 ```
 
-| Layer | What it does | Status |
-|---|---|---|
-| OLTP schema | Normalized transactional tables — the "source system" | Done |
-| Synthetic data | ~5k customers, ~500 products, ~100k orders over 3 years | In progress |
-| Star schema | Fact and dimension tables for analytics | Planned |
-| ETL | Incremental load from OLTP into the warehouse | Planned |
-| Analytics SQL | Window functions, CTEs, recursive queries, cohort analysis | Planned |
-| Optimization | Index tuning with before/after execution plans | Planned |
-| Views & procedures | Reporting layer, stored procedures, triggers | Planned |
-| Dashboard | Power BI / Metabase on top of the views | Planned |
+| Layer              | What it does                                               | Status      |
+| ------------------ | ---------------------------------------------------------- | ----------- |
+| OLTP schema        | Normalized transactional tables — the "source system"     | Done        |
+| Synthetic data     | 17k customers, 500 products, 94.5k orders over 3 years     | Done        |
+| Star schema        | Fact and dimension tables for analytics                    | In progress |
+| ETL                | Incremental load from OLTP into the warehouse              | Planned     |
+| Analytics SQL      | Window functions, CTEs, recursive queries, cohort analysis | Planned     |
+| Optimization       | Index tuning with before/after execution plans             | Planned     |
+| Views & procedures | Reporting layer, stored procedures, triggers               | Planned     |
+| Dashboard          | Power BI / Metabase on top of the views                    | Planned     |
 
 ---
 
 ## Tech stack
 
-- **PostgreSQL 16** — database
+- **PostgreSQL 18** — database
 - **Python 3** (`faker`, `pandas`, `psycopg2`) — data generation and ETL
 - **dbdiagram.io / DBML** — schema as version-controlled code, diagram generated from it
 - **VS Code** with the DBML ERD extension for previewing the diagram while editing
@@ -38,8 +38,12 @@ OLTP (3NF)  →  ETL  →  Star Schema Warehouse  →  Reporting Views  →  Das
 
 ```
 ├── docs/                  # ERD diagram + DBML source, design notes
-├── schema/                # OLTP DDL
-├── etl/                   # Data generation and load scripts
+├── schema/                # OLTP DDL (00_drop_tables.sql, 01_create_tables.sql)
+├── etl/
+│   ├── config.py          # All sizing knobs, date ranges, and the random seed
+│   ├── generators/        # One module per table
+│   ├── generate_data.py   # Orchestrator — runs generators in FK order, writes CSVs
+│   └── load_data.py       # Bulk COPY into Postgres + sequence reset
 ├── sample_data/           # Generated CSVs (gitignored — reproducible from the script)
 ├── analytics/             # Advanced SQL queries
 ├── optimization/          # Index experiments and execution plans
@@ -76,17 +80,62 @@ The schema is written as DBML in [docs/schema.dbml](docs/schema.dbml) so it live
 
 ---
 
-## Phase 2 — Synthetic data (in progress)
+## Phase 2 — Synthetic data (done)
 
-Realistic data matters more than I expected: uniformly random data makes every analytical query return a flat, boring result. The generator in [etl/generate_data.py](etl/generate_data.py) deliberately builds in the patterns I'll want to detect later:
+**490,445 rows across nine tables**, covering three years of trading (2023-08-13 → 2026-08-12) and $313.6M in gross revenue.
 
-- **Seasonality** — order volume spikes in November and December.
-- **Pareto product demand** — roughly 20% of products drive 80% of revenue, using weighted sampling rather than uniform choice.
-- **Mixed customer behavior** — one-time buyers, occasional shoppers, and loyal repeat customers, so churn and retention are actually measurable.
-- **Continuous signups** across three years, which is what makes cohort analysis possible.
-- **Referential realism** — no order predates its store's opening date, and online orders carry no employee.
+| Table | Rows | | Table | Rows |
+| --- | ---: | --- | --- | ---: |
+| `order_items` | 284,504 | | `products` | 500 |
+| `orders` | 94,534 | | `employees` | 162 |
+| `payments` | 86,194 | | `categories` | 36 |
+| `customers` | 17,000 | | `stores` | 15 |
+| `inventory` | 7,500 | | | |
 
-Everything is seeded (`random.seed(42)`, `Faker.seed(42)`) so the dataset is reproducible. Generated CSVs are gitignored — anyone cloning the repo regenerates them by running the script.
+Realistic data mattered far more than I expected. My first attempt used uniform random values everywhere, and the result was useless: every analytical query returned a flat line. There was nothing to *find*. So the generator ([etl/generators/](etl/generators/)) deliberately builds in the patterns I'll want to detect later.
+
+### The patterns, and how they're produced
+
+**Seasonality.** A weighted calendar biases order dates toward November and December. Measured on the data: November 2025 has 6,679 orders against October's 3,261 — a 2.05× lift, in line with real retail.
+
+**Pareto demand.** Each product gets a hidden `popularity_weight` drawn from `random.paretovariate()`, used as the weight in `random.choices` when picking line items. I never hardcode which products are popular — the concentration emerges. Result: the top 20% of products account for 86% of revenue.
+
+**Mixed customer behavior.** Every customer is assigned a hidden segment (`one_time`, `occasional`, `loyal`, `never_bought`) that determines how many orders they place. This produces a realistic long tail — mean 6.0 orders per customer, median 1, max 40 — and 1,227 customers who signed up and never purchased. Without this spread, cohort retention and RFM segmentation would have nothing to measure.
+
+**Referential realism.** No order predates its store's opening date or its customer's signup. Online orders (39.8%) carry no `employee_id`. Payments exist only for orders that actually resolved, and always match the order total exactly.
+
+### Design decisions
+
+**Hidden attributes never reach the database.** `popularity_weight`, customer segment, and stock tier all exist only in Python — they're modelling inputs, not business data. A real `products` table has no "popularity" column; popularity is something you *derive* from sales. Keeping them out of the CSVs preserves that: the analytics in later phases have to discover these patterns rather than read them off a column.
+
+**Orders and order_items are generated together.** `orders.total_amount` has to equal the real sum of its line items. Generating them in two independent passes would guarantee they never reconcile, so each order's items are built immediately and summed into the total.
+
+**`COPY`, not `INSERT`.** [etl/load_data.py](etl/load_data.py) bulk-loads via `psycopg2`'s `copy_expert`. At ~490k rows, row-by-row inserts would take minutes for no benefit.
+
+**Sequences must be reset after loading.** This one caught me out. `COPY` writes explicit IDs straight into the column and never touches the `SERIAL` sequence, so after loading, every sequence was still sitting at 1 — and the first ordinary `INSERT` failed with a primary key collision. The load script now fast-forwards all nine sequences with `setval(pg_get_serial_sequence(...), MAX(id) + 1, false)`.
+
+**Everything is seeded.** `random.seed(42)` and `Faker.seed(42)` at import time in [etl/config.py](etl/config.py), so the dataset is byte-for-byte reproducible. Generated CSVs are gitignored — anyone cloning the repo regenerates them.
+
+**One place to tune.** Every sizing knob, date range, and distribution lives in [etl/config.py](etl/config.py). Changing the dataset size is a one-line edit, not a hunt through eight modules.
+
+### Validating before loading
+
+I wrote a validation pass that checks the CSVs against every schema constraint *before* attempting the load, rather than discovering violations 200k rows into a `COPY`. It covers:
+
+- Every `VARCHAR` length limit, `CHECK` constraint, and `UNIQUE` constraint
+- Referential integrity for all nine foreign keys, including the two self-referencing ones
+- Business rules: `total_amount` reconciles against line items to the cent, no order predates its store or customer, online orders carry no employee, payments match order totals
+- Distribution sanity: seasonality lift, Pareto concentration, orders-per-customer spread
+
+This caught three real bugs — 3,329 orders with a `status` value the `CHECK` constraint rejects, a phantom `tier` column that didn't exist in the table, and an entirely missing customer segment that left a hole in the distribution between 1 and 9 orders.
+
+### What went wrong along the way
+
+**Editing a file doesn't change the database.** I fixed a bad `DEFAULT 0` / `CHECK (> 0)` contradiction in my DDL, re-ran the script, and got "relation already exists" — the tables were still there from the first run and my fix never executed. That's what [schema/00_drop_tables.sql](schema/00_drop_tables.sql) is for.
+
+**Editing a generator doesn't change the CSVs.** Same lesson, one level up. I spent time debugging data that had been generated ten hours earlier by code I'd since changed. Now I check timestamps before trusting output.
+
+**The first dataset was quietly broken.** It passed every constraint check but was analytically useless: order volume grew 69× across the window (because signups were spread over the *same* window as orders, so early months had almost no eligible customers), and the "occasional" segment was misconfigured to 10-30 orders instead of 2-8, leaving zero customers in the 2-8 range. Decoupling the signup window from the order window and fixing the ranges brought it down to a believable 12× growth curve with a properly filled distribution.
 
 ---
 
@@ -97,22 +146,36 @@ Everything is seeded (`random.seed(42)`, `Faker.seed(42)`) so the dataset is rep
 createdb retail_warehouse_db
 
 # 2. Build the OLTP schema
-psql -d retail_warehouse_db -f schema/01_create_tables.sql
+psql -U postgres -d retail_warehouse_db -f schema/01_create_tables.sql
 
 # 3. Configure the connection (create a .env file in the project root)
-DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:5432/retail_warehouse_db
+echo "DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:5432/retail_warehouse_db" > .env
 
-# 4. Install dependencies and generate data
+# 4. Install dependencies
 pip install -r requirements.txt
+
+# 5. Generate the dataset (writes sample_data/*.csv) and load it
 python etl/generate_data.py
+python etl/load_data.py --truncate
 ```
+
+### Rebuilding the schema from scratch
+
+`00_drop_tables.sql` drops all nine tables in reverse dependency order. It's a separate file rather than a header on the create script so it can't be run by accident once real data is loaded.
+
+```bash
+psql -U postgres -d retail_warehouse_db -v ON_ERROR_STOP=1 -f schema/00_drop_tables.sql
+psql -U postgres -d retail_warehouse_db -v ON_ERROR_STOP=1 -f schema/01_create_tables.sql
+```
+
+`ON_ERROR_STOP=1` aborts on the first error instead of continuing and leaving a half-built schema.
 
 ---
 
 ## What's next
 
-- [x] Normalized OLTP schema with constraints and ER diagram
-- [ ] Synthetic data generation and bulk load
+- [X] Normalized OLTP schema with constraints and ER diagram
+- [X] Synthetic data generation, validation, and bulk load (490k rows)
 - [ ] Star schema warehouse (`fact_sales`, `dim_date`, `dim_customer` as SCD Type 2, `dim_product`, `dim_store`)
 - [ ] Incremental ETL with data quality checks
 - [ ] Advanced SQL: window functions, RFM segmentation, recursive category rollups, cohort retention
