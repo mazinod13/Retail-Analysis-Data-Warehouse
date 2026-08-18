@@ -23,10 +23,15 @@ CREATE TABLE IF NOT EXISTS dw.dim_date (
     day           INT  NOT NULL,
     month_name    TEXT NOT NULL,             -- TRIM(TO_CHAR(d,'Month')) — it right-pads to 9 chars
     day_name      TEXT NOT NULL,
-    day_of_week   INT  NOT NULL,             -- ISODOW: Monday=1 .. Sunday=7
-    week_of_year  INT  NOT NULL,
-    is_weekend    BOOLEAN NOT NULL,
-    fiscal_year   INT  NOT NULL              -- fiscal year runs Feb 1 - Jan 31
+    day_of_week    INT  NOT NULL,            -- ISODOW: Monday=1 .. Sunday=7
+    day_of_year    INT  NOT NULL,            -- 1..365, or 1..366 in a leap year
+    week_of_year   INT  NOT NULL,
+    is_weekend     BOOLEAN NOT NULL,
+    is_leap_year   BOOLEAN NOT NULL,         -- lets YoY comparisons correct for the extra day
+    -- Nepali (Bikram Sambat) fiscal calendar: the year runs mid-July to
+    -- mid-July, approximated here as Jul 17 - Jul 16. See warehouse.md.
+    fiscal_year    INT  NOT NULL,
+    fiscal_quarter INT  NOT NULL             -- FQ1 = Jul 17 - Oct 16, and so on
 );
 
 

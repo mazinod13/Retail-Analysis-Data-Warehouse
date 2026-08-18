@@ -48,7 +48,15 @@ The only dimension with no source table; it's generated from a date range rather
 
 It's also the only dimension that uses a **smart key**: `date_key` is the date encoded as `YYYYMMDD` (`20261225`) instead of a meaningless surrogate. This is standard Kimball practice for dates, because it makes fact rows readable while debugging and lets you range-filter dates on the fact table without joining the dimension at all.
 
-Fiscal year is defined as running **February 1 – January 31**, the common retail convention. That's a choice, not a fact — the ETL that populates the column is where to change it.
+**The fiscal calendar is Nepali (Bikram Sambat)**, not Gregorian. The BS fiscal year runs Shrawan 1 to Ashadh end — mid-July to mid-July — with quarters at mid-October, mid-January, and mid-April. I've approximated the boundary as **July 17**, and `fiscal_year` is labelled by the calendar year it starts in, so 2025-07-17 through 2026-07-16 is fiscal 2025.
+
+*Known limitation:* Shrawan 1 actually falls on July 16 **or** 17 depending on the year, because BS month lengths vary. A fixed date will be a day out in some years. Doing this properly needs a BS↔AD conversion table rather than arithmetic; the approximation is good enough for this dataset, but it is an approximation.
+
+Both `quarter` (calendar) and `fiscal_quarter` (BS) are stored. Reports need both, and keeping only one would force every consumer to know which convention was picked.
+
+**The 16-day shift.** Mid-month fiscal boundaries would normally mean paired month-and-day comparisons at every quarter edge. Subtracting 16 days from each date first moves the July 17 boundary onto July 1, after which both fiscal columns fall out of plain month arithmetic — `fiscal_quarter` reduces to `((month + 5) % 12) / 3 + 1` with no `CASE` at all.
+
+**Leap years** need no handling in the series itself; `generate_series` walks the real calendar, so 2024-02-29 appears automatically. They matter for *analysis*: 2024 has 366 days, so year-over-year totals are inflated ~0.27% against a common year. The `is_leap_year` flag exists so that can be corrected for rather than silently absorbed. The leap test uses the full Gregorian rule (divisible by 4, except centuries, unless divisible by 400) — the century exception never fires in this date range, but hardcoding `% 4 = 0` would quietly break if the range were ever widened past 2100.
 
 ### `dim_customer` — Slowly Changing Dimension, Type 2
 
