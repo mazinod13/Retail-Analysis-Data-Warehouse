@@ -37,3 +37,9 @@ WHERE
     OR dw.dim_employee.hire_date IS DISTINCT FROM EXCLUDED.hire_date
     OR dw.dim_employee.manager_name IS DISTINCT FROM EXCLUDED.manager_name
     OR dw.dim_employee.store_name IS DISTINCT FROM EXCLUDED.store_name;
+
+
+#test queries
+SELECT count(*) FROM dw.dim_employee;      
+SELECT count(*) FROM dw.dim_employee WHERE manager_name IS NULL; -- ~16 (15 managers + unknown)
+SELECT * FROM dw.dim_employee WHERE employee_key = -1;         
