@@ -66,7 +66,7 @@ WHERE
     OR dw.dim_product.cost                 IS DISTINCT FROM EXCLUDED.cost;
 
 
-#test
+-- test queries
 SELECT count(*) FROM dw.dim_product;                                    -- 500
 SELECT count(*) FROM dw.dim_product WHERE category_name IS NULL;        -- 0
 SELECT count(*) FROM dw.dim_product WHERE parent_category_name IS NULL; -- 0
