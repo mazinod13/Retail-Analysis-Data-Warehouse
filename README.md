@@ -16,9 +16,9 @@ OLTP (3NF)  →  ETL  →  Star Schema Warehouse  →  Reporting Views  →  Das
 | ------------------ | ---------------------------------------------------------- | ----------- |
 | OLTP schema        | Normalized transactional tables — the "source system"     | Done        |
 | Synthetic data     | 17k customers, 500 products, 94.5k orders over 3 years     | Done        |
-| Star schema        | Fact and dimension tables for analytics                    | In progress |
-| ETL                | Incremental load from OLTP into the warehouse              | Planned     |
-| Analytics SQL      | Window functions, CTEs, recursive queries, cohort analysis | Planned     |
+| Star schema        | 5 dimensions + 284.5k-row fact table, SCD Type 2 customers | Done        |
+| Warehouse ETL      | Idempotent SQL loads, point-in-time key resolution         | Done        |
+| Analytics SQL      | Window functions, CTEs, recursive queries, cohort analysis | In progress |
 | Optimization       | Index tuning with before/after execution plans             | Planned     |
 | Views & procedures | Reporting layer, stored procedures, triggers               | Planned     |
 | Dashboard          | Power BI / Metabase on top of the views                    | Planned     |
@@ -45,6 +45,11 @@ OLTP (3NF)  →  ETL  →  Star Schema Warehouse  →  Reporting Views  →  Das
 │   ├── generate_data.py   # Orchestrator — runs generators in FK order, writes CSVs
 │   └── load_data.py       # Bulk COPY into Postgres + sequence reset
 ├── sample_data/           # Generated CSVs (gitignored — reproducible from the script)
+├── warehouse/             # Star schema DDL + numbered ETL loads
+│   ├── warehouse.md       # Design rationale for every modelling decision
+│   ├── 01_create_dw_tables.sql
+│   ├── 02..07_load_*.sql  # dim_date → dims → fact_sales, run in order
+│   └── 99_demo_scd2.sql   # Perturbs the source to exercise Type 2 versioning
 ├── analytics/             # Advanced SQL queries
 ├── optimization/          # Index experiments and execution plans
 ├── dashboard/             # Dashboard file and screenshots
@@ -139,6 +144,117 @@ This caught three real bugs — 3,329 orders with a `status` value the `CHECK` c
 
 ---
 
+## Phase 3 — Star schema warehouse (done)
+
+The warehouse lives in a `dw` schema alongside the OLTP tables. Full design rationale is in [warehouse/warehouse.md](warehouse/warehouse.md).
+
+| Table | Rows | Type |
+| --- | ---: | --- |
+| `fact_sales` | 284,504 | Fact — grain: one product line on one order |
+| `dim_customer` | 17,204 | **SCD Type 2** (17,000 current + 204 historical versions) |
+| `dim_date` | 2,191 | Generated, Nepali fiscal calendar |
+| `dim_product` | 500 | Type 1, category hierarchy flattened in |
+| `dim_employee` | 163 | Type 1, includes an unknown member |
+| `dim_store` | 15 | Type 1 |
+
+**The grain, stated up front:** one row in `fact_sales` is one product line on one order. Everything else follows from that sentence. It's the lowest detail the source offers, so every other level — order, day, month, category, region — aggregates up from it. You can always roll up; you can never break back down.
+
+### Why a star schema when the OLTP could already answer these questions
+
+It could, but badly. "Revenue by category by month" against the source means joining `order_items → orders → products → categories`, then walking the category tree recursively, and repeating that work on every single query. The star pre-resolves those joins into wide, denormalized dimensions so analytical queries touch two tables instead of five. Storage and write complexity traded for read speed — a good trade when data is written once by ETL and read constantly by dashboards.
+
+### Slowly Changing Dimension Type 2
+
+`dim_customer` keeps history. When a tracked attribute changes, the existing row is closed (`valid_to` set, `is_current` cleared) and a new row is inserted with a fresh surrogate key.
+
+This is the part of the project I'd point at first. Three things had to be right:
+
+**The natural key must not be unique.** My first draft had `customer_id INT NOT NULL UNIQUE`, which makes Type 2 impossible — one customer needs many rows, one per version. Uniqueness is instead enforced by a partial unique index, which expresses what actually needs to be true:
+
+```sql
+CREATE UNIQUE INDEX uq_dim_customer_current
+    ON dw.dim_customer (customer_id) WHERE is_current;
+```
+
+Many historical rows per customer, never more than one current.
+
+**One script handles both the initial and incremental load.** Step 1 closes changed rows; step 2 inserts a current row for anyone who *doesn't have one*. That condition is true both for a customer never loaded before and for one whose row step 1 just closed — so a single `INSERT` covers both cases and there's no separate first-run path to keep in sync.
+
+**`age` is deliberately not tracked.** It changes for everyone every year and would churn all 17,000 rows annually for no analytical benefit. A predictable change isn't a slowly changing dimension.
+
+### Proving it works
+
+Static generated data means the versioning branch never fires — the dimension loads correctly and produces no history at all. So [warehouse/99_demo_scd2.sql](warehouse/99_demo_scd2.sql) perturbs the source (170 relocations, 68 email changes) and the load is re-run.
+
+Results: **204 rows closed, 204 replacements inserted.** That number is itself a check — 170 + 68 − 34 customers caught by both filters = 204, so change detection found precisely the right rows. Four invariants verified:
+
+- Every customer still has exactly one current row
+- **Zero timeline gaps** — each closed `valid_to` equals its successor's `valid_from` exactly
+- Distinct customer count unchanged at 17,000
+- Re-running reports `UPDATE 0 / INSERT 0` — idempotent
+
+### Point-in-time key resolution
+
+The reason Type 2 is worth the effort shows up in the fact load. `customer_key` is resolved as of the **order date**, not as of now:
+
+```sql
+JOIN dw.dim_customer AS dc
+    ON  dc.customer_id = o.customer_id
+    AND o.order_date  >= dc.valid_from
+    AND (o.order_date < dc.valid_to OR dc.valid_to IS NULL)
+```
+
+**3,543 fact rows** point at superseded customer versions — sales correctly attributed to where the customer lived at the time, not where they live now. Replace that join with `AND dc.is_current` and every one of those sales gets silently rewritten.
+
+The strict `<` is load-bearing. A closed row's `valid_to` equals its successor's `valid_from`, so `<=` would match both versions on the changeover day and duplicate the fact row. Half-open intervals `[from, to)` tile exactly.
+
+### Other modelling decisions
+
+**Unknown member instead of NULL keys.** 37,624 orders are online and have no salesperson. Rather than allowing a NULL foreign key — which breaks inner joins and forces every downstream query to remember an outer join — `dim_employee` carries an explicit `employee_key = -1` row labelled "Online / No Salesperson". Every fact foreign key is `NOT NULL`.
+
+**Star, not snowflake.** The category hierarchy is flattened into `dim_product` as `category_name`, `parent_category_name`, and `category_path`. Keeping separate category tables would rebuild the OLTP normalization inside the warehouse and discard the benefit. Flattening a self-referencing hierarchy is what a recursive CTE is for, so the recursive query does real work in the ETL rather than existing as a showcase.
+
+**Cancelled orders are loaded, not filtered.** `order_status` rides along on the fact so reporting can exclude them from revenue while cancellation rate stays measurable. Dropping them at load time would make that question permanently unanswerable.
+
+**Derived measures are stored.** `net_amount`, `cost_amount`, and `profit_amount` are all computable from other columns. Computing once at load beats recomputing on every dashboard query.
+
+**Idempotent loads via upsert.** Every dimension load is `INSERT ... ON CONFLICT (natural_key) DO UPDATE ... WHERE <columns> IS DISTINCT FROM EXCLUDED.<columns>`. The `IS DISTINCT FROM` guard means a re-run with unchanged source writes zero rows rather than rewriting everything and bloating the table with dead tuples. `IS DISTINCT FROM` rather than `<>` because `<>` yields NULL when either side is NULL, so a NULL→value change would go undetected.
+
+### Reconciliation
+
+The fact load has to tie out exactly, and it does:
+
+| Check | Result |
+| --- | --- |
+| Fact rows vs source `order_items` | 284,504 = 284,504 |
+| Net revenue | $313,590,190.94 = $313,590,190.94 |
+| Rows on the unknown member | 112,994 — all `channel = 'online'` |
+
+Exact row parity is the check that matters. Fewer would mean a join silently dropped rows; **more** would mean the SCD2 window matched two customer versions and double-counted revenue.
+
+### What went wrong here
+
+**`DELETE` and upsert don't mix.** My dimension loads started with `DELETE FROM dw.dim_<x>;` followed by a carefully written `ON CONFLICT` clause — which the delete made unreachable, since an empty table can't conflict. Worse, it regenerates surrogate keys on every run (silently repointing every fact row) and it destroyed the unknown member. That last one bit twice before I removed the deletes.
+
+**Multiple `WITH` keywords.** My first recursive CTE attempt declared one CTE per output column, each with its own `WITH` and no `FROM` clause. A CTE is a named result set, not a variable declaration — and one that selects from nothing can't see another's columns. Ten CTEs collapsed into ten lines of a single `SELECT`.
+
+**`#` is not a SQL comment.** That's MySQL. PostgreSQL uses `--`.
+
+### Running it
+
+```bash
+cd warehouse
+for f in 01_create_dw_tables.sql 02_load_dim_data.sql 03_load_dim_store.sql \
+         04_load_dim_employee.sql 05_load_dim_product.sql \
+         06_load_dim_customer.sql 07_load_fact_sales.sql; do
+    psql -U postgres -d retail_warehouse_db -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
+Order matters: dimensions before the fact table, or its foreign keys have nothing to resolve against.
+
+---
+
 ## Getting started
 
 ```bash
@@ -176,8 +292,8 @@ psql -U postgres -d retail_warehouse_db -v ON_ERROR_STOP=1 -f schema/01_create_t
 
 - [X] Normalized OLTP schema with constraints and ER diagram
 - [X] Synthetic data generation, validation, and bulk load (490k rows)
-- [ ] Star schema warehouse (`fact_sales`, `dim_date`, `dim_customer` as SCD Type 2, `dim_product`, `dim_store`)
-- [ ] Incremental ETL with data quality checks
+- [X] Star schema warehouse (`fact_sales`, `dim_date`, `dim_customer` as SCD Type 2, `dim_product`, `dim_store`)
+- [X] Idempotent warehouse ETL with point-in-time key resolution and reconciliation checks
 - [ ] Advanced SQL: window functions, RFM segmentation, recursive category rollups, cohort retention
 - [ ] Index tuning with before/after `EXPLAIN ANALYZE` comparisons
 - [ ] Stored procedures, triggers, and reporting views
