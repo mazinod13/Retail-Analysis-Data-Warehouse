@@ -1,9 +1,6 @@
 
 
 
-DELETE FROM dw.dim_employee;
-
-
 INSERT INTO dw.dim_employee(
     employee_id,
     full_name,
