@@ -1,5 +1,3 @@
-DELETE FROM dw.dim_store;
-
 INSERT INTO dw.dim_store(
     store_id,
     name,
