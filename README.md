@@ -18,7 +18,7 @@ OLTP (3NF)  →  ETL  →  Star Schema Warehouse  →  Reporting Views  →  Das
 | Synthetic data     | 17k customers, 500 products, 94.5k orders over 3 years     | Done        |
 | Star schema        | 5 dimensions + 284.5k-row fact table, SCD Type 2 customers | Done        |
 | Warehouse ETL      | Idempotent SQL loads, point-in-time key resolution         | Done        |
-| Analytics SQL      | Window functions, CTEs, recursive queries, cohort analysis | In progress |
+| Analytics SQL      | 7 query sets — windows, CTEs, cohorts, association rules   | Done        |
 | Optimization       | Index tuning with before/after execution plans             | Planned     |
 | Views & procedures | Reporting layer, stored procedures, triggers               | Planned     |
 | Dashboard          | Power BI / Metabase on top of the views                    | Planned     |
@@ -50,7 +50,11 @@ OLTP (3NF)  →  ETL  →  Star Schema Warehouse  →  Reporting Views  →  Das
 │   ├── 01_create_dw_tables.sql
 │   ├── 02..07_load_*.sql  # dim_date → dims → fact_sales, run in order
 │   └── 99_demo_scd2.sql   # Perturbs the source to exercise Type 2 versioning
-├── analytics/             # Advanced SQL queries
+├── analytics/             # 7 numbered query sets, each with its own header
+│   ├── 01_revenue_trends.sql      04_customer_rfm.sql
+│   ├── 02_product_rankings.sql    05_cohort_retention.sql
+│   ├── 03_pareto_abc.sql          06_category_rollup.sql
+│   └── 07_basket_analysis.sql
 ├── optimization/          # Index experiments and execution plans
 ├── dashboard/             # Dashboard file and screenshots
 ```
@@ -255,6 +259,93 @@ Order matters: dimensions before the fact table, or its foreign keys have nothin
 
 ---
 
+## Phase 4 — Analytics (done)
+
+Seven query sets in [analytics/](analytics/), each developed on its own branch and merged by PR. Every file carries a header stating the business question, the technique, and how to read the result.
+
+| File | Question | Technique |
+| --- | --- | --- |
+| `01_revenue_trends.sql` | How is revenue moving? | `SUM() OVER`, `LAG`, moving average, TTM CAGR |
+| `02_product_rankings.sql` | Top products, and who's climbing? | `RANK`, `ROW_NUMBER`, `LAG` on rank, sales-gap analysis |
+| `03_pareto_abc.sql` | Which products actually matter? | Cumulative window, ABC classification |
+| `04_customer_rfm.sql` | Who are our best customers? | Chained CTEs, `NTILE(5)`, segment `CASE` |
+| `05_cohort_retention.sql` | Do customers come back? | Self-join on first-purchase month, pivoted triangle |
+| `06_category_rollup.sql` | Performance at every level of the tree | `GROUP BY ROLLUP`, `GROUPING()` |
+| `07_basket_analysis.sql` | What gets bought together? | Self-join, support / confidence / lift |
+
+**One rule applies to all of them:** cancelled orders are excluded with `WHERE order_status <> 'cancelled'`. I kept them in the fact table deliberately so cancellation rate stays measurable, which makes filtering the analyst's job. Forgetting it overstates revenue by $23.6M (7.5%). Every file does it in a base CTE so downstream stages inherit it.
+
+### ABC analysis confirms the Pareto design
+
+| Class | Products | % of catalogue | Revenue | % of revenue |
+| --- | ---: | ---: | ---: | ---: |
+| A | 62 | 12.4% | $231.7M | **79.9%** |
+| B | 170 | 34.0% | $43.8M | 15.1% |
+| C | 268 | 53.6% | $14.5M | 5.0% |
+
+12% of products drive 80% of revenue. This is a round trip worth noting: the generator assigns each product a hidden `popularity_weight` drawn from a Pareto distribution and never records it anywhere. The 80/20 split is *rediscovered* here from sales data alone.
+
+### RFM segmentation
+
+`NTILE(5)` over recency, frequency and monetary value, then a `CASE` mapping score combinations to named segments.
+
+| Segment | Customers | Revenue |
+| --- | ---: | ---: |
+| Champions | 3,970 | $206.7M |
+| At Risk | 3,346 | $52.6M |
+| Hibernating | 3,870 | $11.2M |
+| Needs Attention | 1,803 | $7.5M |
+| Loyal | 970 | $7.4M |
+| New / Promising | 1,126 | $3.3M |
+| Can't Lose Them | 83 | $1.4M |
+
+One subtlety: recency is scored `NTILE(5) OVER (ORDER BY recency_days DESC)` — descending, because *low* recency is good. Frequency and monetary sort ascending. Getting that backwards inverts the entire segmentation while still producing plausible-looking output.
+
+### Cohort retention
+
+Customers grouped by first-purchase month, tracked forward. `period_number` is computed as whole months elapsed rather than a date difference, so partial months don't blur cohort boundaries. The long-format result is pivoted with `MAX(CASE WHEN period_number = n ...)` into the classic retention triangle.
+
+```
+cohort_month | size |  m0   |  m1  |  m2  |  m3  |  m4  |  m5
+-------------+------+-------+------+------+------+------+------
+2023-08-01   |  363 | 100.0 | 16.3 | 13.2 | 25.1 | 29.5 | 17.9
+2023-12-01   |  471 | 100.0 | 13.0 |  7.6 |  7.9 | 12.3 | 10.0
+2024-02-01   |  219 | 100.0 | 10.0 |  8.2 |  9.6 | 10.5 | 11.4
+```
+
+Reading it honestly: retention is flat-to-noisy rather than showing the decay-then-stabilise curve real retail produces. That's a property of the generator — a customer's orders are spread uniformly between signup and today, so there's no concept of churn or re-engagement. The query is correct; the data has no retention signal to find.
+
+### Market basket analysis — and why lift matters
+
+Support, confidence and lift computed over category pairs via a self-join on `order_id`, using `a.item < b.item` to exclude self-pairs and keep one ordering per pair.
+
+```
+item_a    | item_b | pair_baskets | support | conf A→B | lift
+----------+--------+--------------+---------+----------+------
+Laptops   | Phones |          809 |  0.925% |   57.01% | 1.033
+```
+
+**That row is the whole argument for lift.** 809 shared baskets and 57% confidence make it look like a strong rule. Lift says 1.03 — nothing. Phones appear in a large share of all baskets, so a Laptops basket is no more likely to contain Phones than any random basket. Support and confidence would both have shipped a false finding; lift divides out popularity and correctly rejects it.
+
+Across every category pair, lift sits between 0.95 and 1.16. **No genuine associations exist in this dataset** — which is the expected result, since the generator samples products independently, weighted only by individual popularity. That *is* the null hypothesis lift is defined against. Demonstrating the absence of a signal with the metric designed to detect it is a better outcome than reporting a spurious one.
+
+Granularity mattered here: 500 products over 87,473 baskets gives ~2.8 observations per possible pair — far too sparse for a stable lift. At category level it's ~932 per pair. Both are in the file; the product-level query is retained to show the sparsity failure mode.
+
+### Things the data can't support, stated plainly
+
+A portfolio is worth more when it distinguishes what the analysis found from what the data permits:
+
+- **CAGR** — my first version compared a 5-month 2023 against an 8-month 2026 and called it three years of growth. Fixed by switching to trailing-twelve-month windows anchored on the last *complete* month, so both endpoints are equal-length. Even corrected, the figure reflects synthetic customer acquisition, not a business trend.
+- **Same-store sales** — all 15 stores opened more than 12 months ago, so the comp filter excludes nothing and the metric is inert here.
+- **Basket sizes are uniform** — exactly 20% of orders at each of 1-5 items, because the generator uses `randint(1, 5)`. Real retail skews heavily toward 1-2 items.
+- **Retention is flat** — no churn behaviour was modelled.
+
+### `ROLLUP` versus recursion
+
+`06_category_rollup.sql` uses `GROUP BY ROLLUP`, not a recursive CTE — the right tool for a fixed two-level hierarchy. The recursive work already happened at load time in [05_load_dim_product.sql](warehouse/05_load_dim_product.sql), where it flattens the tree into the dimension. Reaching for recursion at query time where a simpler construct fits would be a mark against the design, not for it.
+
+---
+
 ## Getting started
 
 ```bash
@@ -294,7 +385,7 @@ psql -U postgres -d retail_warehouse_db -v ON_ERROR_STOP=1 -f schema/01_create_t
 - [X] Synthetic data generation, validation, and bulk load (490k rows)
 - [X] Star schema warehouse (`fact_sales`, `dim_date`, `dim_customer` as SCD Type 2, `dim_product`, `dim_store`)
 - [X] Idempotent warehouse ETL with point-in-time key resolution and reconciliation checks
-- [ ] Advanced SQL: window functions, RFM segmentation, recursive category rollups, cohort retention
+- [X] Advanced SQL: window functions, RFM segmentation, category rollups, cohort retention, market basket analysis
 - [ ] Index tuning with before/after `EXPLAIN ANALYZE` comparisons
 - [ ] Stored procedures, triggers, and reporting views
 - [ ] Dashboard built on the reporting views
