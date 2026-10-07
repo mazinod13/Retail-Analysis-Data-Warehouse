@@ -31,24 +31,23 @@ SELECT
     month_name,
     year,
 
-    -- volume / topline
     net_revenue,
     gross_revenue,
     orders,
     quantity,
     ROUND(avg_order_value, 2)                                    AS avg_order_value,
 
-    -- profitability
+
     profit,
     ROUND(100.0 * profit / NULLIF(net_revenue, 0), 1)            AS profit_margin_pct,
     ROUND(100.0 * (gross_revenue - net_revenue) / NULLIF(gross_revenue, 0), 1) AS discount_pct,
 
-    -- cumulative
+  
     ytd_revenue,
     ytd_profit,
     ytd_orders,
 
-    -- trend
+
     ROUND(100.0 * (net_revenue - prev_month_revenue) / NULLIF(prev_month_revenue, 0), 1) AS mom_pct,
     ROUND(100.0 * (net_revenue - same_month_last_year) / NULLIF(same_month_last_year, 0), 1) AS yoy_pct,
     moving_avg_3mo
